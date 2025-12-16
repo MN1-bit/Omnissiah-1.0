@@ -189,6 +189,10 @@ class OmnissiahController:
             if self.bridge and self.bridge.ib:
                 self.order_executor.set_ib(self.bridge.ib)
             
+            # 실시간 시세 구독 (SPY, QQQ, VIX)
+            self.bridge.price_update.connect(self._on_price_update)
+            self.bridge.subscribe_market_data(["SPY", "QQQ", "VIX"])
+            
             # 스케줄러 시작
             self.scheduler.start()
             
@@ -303,6 +307,37 @@ class OmnissiahController:
         self._current_regime = regime
         self.dashboard.update_mode(regime)
         self.dashboard.add_log(f"📊 레짐 변경: {regime}")
+    
+    def _on_price_update(self, data: dict) -> None:
+        """
+        실시간 시세 업데이트
+        
+        Args:
+            data: {symbol, bid, ask, last, volume, high, low, close}
+        """
+        symbol = data.get("symbol", "")
+        last_price = data.get("last", 0.0)
+        
+        # 최신 가격 저장
+        if not hasattr(self, "_last_prices"):
+            self._last_prices = {}
+        
+        self._last_prices[symbol] = {
+            "last": last_price,
+            "bid": data.get("bid", 0.0),
+            "ask": data.get("ask", 0.0),
+        }
+        
+        # VIX 실시간 업데이트
+        if symbol == "VIX" and last_price > 0:
+            self.market_data._last_vix = last_price
+        
+        # 차트 업데이트 (SPY만)
+        if symbol == "SPY" and last_price > 0:
+            try:
+                self.dashboard.chart_widget.update_price(last_price)
+            except Exception:
+                pass  # 차트 업데이트 실패 무시
     
     def _on_kill_switch(self, status: str) -> None:
         """킬 스위치 발동"""

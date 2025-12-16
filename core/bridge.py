@@ -13,9 +13,9 @@ GUI가 멈추지 않도록 별도 스레드에서 실행됩니다.
 # 필수 라이브러리 임포트
 # ============================================
 import os                               # 환경 변수
-from typing import Optional, Dict, Any  # 타입 힌트
+from typing import Optional, Dict, Any, List  # 타입 힌트
 from dotenv import load_dotenv          # .env 파일 로드
-from ib_insync import IB, util          # IBKR API
+from ib_insync import IB, util, Stock, Ticker  # IBKR API
 from PyQt6.QtCore import (              # PyQt6 코어
     QThread,                            # 백그라운드 스레드
     pyqtSignal,                         # 시그널 (스레드 → GUI 통신)
@@ -35,6 +35,7 @@ class IBKRBridge(QThread):
     Signals:
         connected(bool): 연결 상태 변경 시 발생
         account_update(dict): 계좌 정보 업데이트 시 발생
+        price_update(dict): 실시간 시세 업데이트 시 발생
         error(str): 에러 발생 시 발생
         log_message(str): 로그 메시지 발생 시 발생
     """
@@ -42,6 +43,7 @@ class IBKRBridge(QThread):
     # === PyQt Signals (GUI와 통신용) ===
     connected = pyqtSignal(bool)        # 연결 상태
     account_update = pyqtSignal(dict)   # 계좌 정보
+    price_update = pyqtSignal(dict)     # 실시간 시세 {symbol, bid, ask, last, volume}
     error = pyqtSignal(str)             # 에러 메시지
     log_message = pyqtSignal(str)       # 로그 메시지
     
@@ -61,6 +63,9 @@ class IBKRBridge(QThread):
         # --- 상태 플래그 ---
         self._is_running: bool = False
         self._is_connected: bool = False
+        
+        # --- 실시간 시세 구독 추적 ---
+        self._subscribed_tickers: Dict[str, Ticker] = {}
     
     def run(self) -> None:
         """
@@ -225,6 +230,85 @@ class IBKRBridge(QThread):
     def get_ib(self) -> Optional[IB]:
         """IB 객체 반환 (다른 모듈에서 사용)"""
         return self.ib if self._is_connected else None
+    
+    # ============================================
+    # 실시간 시세 구독
+    # ============================================
+    
+    def subscribe_market_data(self, symbols: List[str]) -> None:
+        """
+        실시간 시세 구독
+        
+        Args:
+            symbols: 구독할 심볼 리스트 (예: ["SPY", "QQQ", "VIX"])
+        """
+        if not self.ib or not self.ib.isConnected():
+            self.log_message.emit("❌ 시세 구독 실패: IBKR 연결 안됨")
+            return
+        
+        for symbol in symbols:
+            if symbol in self._subscribed_tickers:
+                continue  # 이미 구독 중
+            
+            try:
+                # VIX는 인덱스
+                if symbol.upper() in ["VIX", "^VIX"]:
+                    from ib_insync import Index
+                    contract = Index("VIX", "CBOE")
+                else:
+                    contract = Stock(symbol, "SMART", "USD")
+                
+                # 시세 구독 요청
+                ticker = self.ib.reqMktData(contract, "", False, False)
+                
+                # 콜백 등록
+                ticker.updateEvent += self._on_price_update
+                
+                self._subscribed_tickers[symbol] = ticker
+                self.log_message.emit(f"📡 실시간 시세 구독: {symbol}")
+                
+            except Exception as e:
+                self.log_message.emit(f"⚠️ {symbol} 구독 실패: {str(e)}")
+    
+    def unsubscribe_market_data(self, symbol: str) -> None:
+        """실시간 시세 구독 해제"""
+        if symbol not in self._subscribed_tickers:
+            return
+        
+        try:
+            ticker = self._subscribed_tickers.pop(symbol)
+            if self.ib and self.ib.isConnected():
+                self.ib.cancelMktData(ticker.contract)
+            self.log_message.emit(f"📴 시세 구독 해제: {symbol}")
+        except Exception as e:
+            self.log_message.emit(f"⚠️ {symbol} 구독 해제 실패: {str(e)}")
+    
+    def unsubscribe_all(self) -> None:
+        """모든 시세 구독 해제"""
+        symbols = list(self._subscribed_tickers.keys())
+        for symbol in symbols:
+            self.unsubscribe_market_data(symbol)
+    
+    def _on_price_update(self, ticker: Ticker) -> None:
+        """실시간 시세 업데이트 콜백"""
+        try:
+            symbol = ticker.contract.symbol
+            
+            data = {
+                "symbol": symbol,
+                "bid": ticker.bid if ticker.bid else 0.0,
+                "ask": ticker.ask if ticker.ask else 0.0,
+                "last": ticker.last if ticker.last else 0.0,
+                "volume": ticker.volume if ticker.volume else 0,
+                "high": ticker.high if ticker.high else 0.0,
+                "low": ticker.low if ticker.low else 0.0,
+                "close": ticker.close if ticker.close else 0.0,
+            }
+            
+            self.price_update.emit(data)
+            
+        except Exception:
+            pass  # 에러 무시 (시세 업데이트가 너무 빈번함)
 
 
 # ============================================

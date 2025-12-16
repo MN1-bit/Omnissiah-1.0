@@ -28,9 +28,16 @@ from PyQt6.QtWidgets import (           # PyQt6 위젯들
     QTextEdit,                          # 텍스트 에디터 (로그용)
     QFrame,                             # 프레임 (구분선)
     QGroupBox,                          # 그룹 박스
+    QSplitter,                          # 분할 레이아웃
 )
 from PyQt6.QtCore import Qt, QTimer     # Qt 코어 기능
 from PyQt6.QtGui import QFont           # 폰트 설정
+
+# === 프로젝트 위젯 임포트 ===
+from gui.chart_widget import LiveChartWidget
+from gui.trade_panel import TradeHistoryPanel
+from gui.order_panel import OrderPositionTabs
+from core.logger import get_logger
 
 
 class OmnissiahDashboard(QMainWindow):
@@ -117,23 +124,54 @@ class OmnissiahDashboard(QMainWindow):
         self.setStyleSheet(dark_style)
     
     def _setup_ui(self) -> None:
-        """UI 레이아웃 구성"""
+        """UI 레이아웃 구성 (좌우 분할)"""
         # --- 중앙 위젯 ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # --- 메인 레이아웃 (수평) ---
+        # --- 메인 레이아웃 ---
         main_layout = QHBoxLayout(central_widget)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # === 왼쪽 패널: 상태 표시 ===
-        left_panel = self._create_status_panel()
-        main_layout.addWidget(left_panel, stretch=1)
+        # === 메인 스플리터 (좌우 분할) ===
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # === 오른쪽 패널: 로그 + 버튼 ===
-        right_panel = self._create_log_panel()
-        main_layout.addWidget(right_panel, stretch=3)
+        # === 왼쪽: 상태 + 로그 ===
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        left_panel = self._create_status_panel()
+        left_layout.addWidget(left_panel)
+        
+        log_panel = self._create_log_panel()
+        left_layout.addWidget(log_panel, stretch=1)
+        
+        main_splitter.addWidget(left_widget)
+        
+        # === 오른쪽: 차트 + 거래내역 ===
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 차트 위젯
+        self.chart_widget = LiveChartWidget()
+        right_layout.addWidget(self.chart_widget, stretch=2)
+        
+        # 거래 내역 패널
+        self.trade_panel = TradeHistoryPanel()
+        
+        # 탭 위젯 (거래내역 + 주문 + 포지션)
+        self.order_tabs = OrderPositionTabs(trade_panel=self.trade_panel)
+        right_layout.addWidget(self.order_tabs, stretch=1)
+        
+        main_splitter.addWidget(right_widget)
+        
+        # 스플리터 비율 설정 (좌:우 = 1:2)
+        main_splitter.setSizes([400, 800])
+        
+        main_layout.addWidget(main_splitter)
     
     def _create_status_panel(self) -> QGroupBox:
         """왼쪽 상태 패널 생성"""
@@ -234,7 +272,7 @@ class OmnissiahDashboard(QMainWindow):
     
     def add_log(self, message: str) -> None:
         """
-        로그 메시지 추가
+        로그 메시지 추가 (GUI + 파일 동시 저장)
         
         Args:
             message: 로그에 표시할 메시지
@@ -242,6 +280,13 @@ class OmnissiahDashboard(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted = f"[{timestamp}] {message}"
         self.log_text.append(formatted)
+        
+        # 파일 로거에도 기록
+        try:
+            logger = get_logger()
+            logger.info(message)
+        except Exception:
+            pass  # 로거 초기화 실패 시 무시
         
         # 자동 스크롤
         scrollbar = self.log_text.verticalScrollBar()

@@ -42,7 +42,10 @@ Part 6: 주문 실행 & 자동화
 Part 7: GUI 고도화 & 로깅
   [x] Step 14: 차트 & 포지션 표시
   [x] Step 15: 거래 내역 패널
-  [ ] Step 16: 파일 기반 로깅 시스템
+  [x] Step 16: 파일 기반 로깅 시스템
+  [x] Step 16.5: 대시보드 통합
+  [x] Step 16.6: 주문 및 포지션 패널
+  [x] Step 16.7: 실시간 시세 연동
 
 Part 8: LLM 통합 (Phase 1)
   [ ] Step 17: LLM 데이터 해설 기능
@@ -792,6 +795,66 @@ Paper Trading 환경에서 전체 시스템 테스트를 진행합니다.
 
 4. 백업
    - 7일 이상 로그 자동 압축
+```
+
+---
+
+## [Step 16.5] 대시보드 통합
+
+### 왜 필요한가?
+Step 14-16에서 만든 차트, 거래내역, 로깅이 별도로 존재합니다.
+메인 대시보드에 통합하여 한 화면에서 모든 정보를 볼 수 있게 합니다.
+
+### AI에게 전달할 프롬프트:
+```
+`gui/dashboard.py`를 수정하여 위젯을 통합합니다.
+
+통합 대상:
+1. LiveChartWidget (gui/chart_widget.py)
+2. TradeHistoryPanel (gui/trade_panel.py)
+3. OmnissiahLogger (core/logger.py)
+
+레이아웃:
+- QSplitter로 좌우 분할
+- 좌측: 상태 정보 + 로그
+- 우측: 차트 + 거래 내역
+
+시그널 연결:
+- order_filled → add_trade()
+- vix_update → update_price()
+- regime_changed → set_regime()
+- 모든 로그 → logger.info()
+```
+
+---
+
+## [Step 16.6] 주문 및 포지션 패널
+
+### 왜 필요한가?
+미체결 주문과 현재 포지션을 실시간으로 확인해야 합니다.
+
+### AI에게 전달할 프롬프트:
+```
+`gui/order_panel.py`를 생성합니다.
+
+클래스 1: OpenOrdersPanel
+- QTableWidget 기반
+- 컬럼: 주문ID, 시간, 심볼, 방향, 수량, 가격, 상태
+- 주문 취소 버튼
+
+클래스 2: PositionsPanel
+- QTableWidget 기반
+- 컬럼: 심볼, 수량, 평균가, 현재가, 손익, 손익%
+- 손익 색상 (이익: 초록, 손실: 빨강)
+
+dashboard.py 수정:
+- 탭 위젯으로 (거래내역 | 주문 | 포지션) 전환
+- 또는 스크롤 영역에 모두 표시
+
+시그널 연결:
+- order_placed → add_order()
+- order_filled/cancelled → remove_order()
+- position_update → update_positions()
 ```
 
 ---
