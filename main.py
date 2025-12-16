@@ -307,6 +307,9 @@ class OmnissiahController:
             term_structure = self.market_data.get_vix_term_structure()
             self.dashboard.update_vix_info(vix_spot, z_score, term_structure)
             
+            # === 7. 레짐별 전략 실행 ===
+            self._execute_strategy(spy_df, kill_status)
+            
         except Exception as e:
             self.dashboard.add_log(f"❌ 루프 오류: {str(e)}")
     
@@ -382,6 +385,70 @@ class OmnissiahController:
         self.dashboard.update_kill_switch(status)
         if status != "CLEAR":
             self.dashboard.add_log(f"🚨 킬 스위치 발동: {status}")
+    
+    def _execute_strategy(self, spy_df, kill_status: str) -> None:
+        """
+        레짐별 전략 실행
+        
+        Args:
+            spy_df: SPY 히스토리컬 데이터
+            kill_status: 킬 스위치 상태
+        """
+        # 현재 가격 가져오기-
+        if not hasattr(self, "_last_prices") or "SPY" not in self._last_prices:
+            # 실시간 가격 없으면 DB에서 가져오기
+            if spy_df is not None and not spy_df.empty:
+                current_price = spy_df["close"].iloc[-1]
+            else:
+                return  # 가격 없으면 전략 실행 안함
+        else:
+            current_price = self._last_prices["SPY"].get("last", 0)
+            if current_price <= 0 and spy_df is not None and not spy_df.empty:
+                current_price = spy_df["close"].iloc[-1]
+        
+        if current_price <= 0:
+            return
+        
+        signal = None
+        
+        if self._current_regime == "횡보":
+            # Green Mode: VWAP 밴드 매매
+            if spy_df is not None and not spy_df.empty:
+                prices = spy_df["close"].tolist()
+                volumes = spy_df["volume"].tolist()
+                vwap, upper, lower = self.green_strategy.calculate_vwap_bands(prices, volumes)
+                
+                signal = self.green_strategy.generate_signal(
+                    current_price=current_price,
+                    vwap=vwap,
+                    lower_band=lower,
+                    kill_status=kill_status,
+                    daily_loss=getattr(self, "_daily_loss", 0),
+                    account=self._account_balance
+                )
+        
+        elif self._current_regime == "상승":
+            # Red Mode: 3x 레버리지 모멘텀
+            # 타겟 ETF 사용
+            target_etf = self.universe_selector.get_target_etf()
+            signal = self.red_strategy.generate_signal(
+                current_price=current_price,
+                symbol=target_etf,
+                kill_status=kill_status,
+                account=self._account_balance
+            )
+        
+        elif self._current_regime == "위기":
+            # Black Mode: 방어 (현금화)
+            signal = self.black_strategy.generate_signal(
+                current_price=current_price,
+                kill_status=kill_status,
+                account=self._account_balance
+            )
+        
+        # 시그널이 있으면 주문 실행
+        if signal:
+            self._execute_order(signal)
     
     # ============================================
     # 주문 실행 핸들러
