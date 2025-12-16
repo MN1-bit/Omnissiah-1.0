@@ -133,15 +133,15 @@ pip list
 
 > 이 단계는 **AI가 도와줄 수 없습니다.** 직접 하셔야 합니다.
 
-1. **IB TWS 또는 IB Gateway 설치**
-   - [IBKR 다운로드 페이지](https://www.interactivebrokers.com/en/trading/tws.php)에서 다운로드
-   - TWS (Trader Workstation) 또는 IB Gateway 설치
+1. **IB Gateway 설치**
+   - [IBKR 다운로드 페이지](https://www.interactivebrokers.com/en/trading/ibgateway-stable.php)
+   - IB Gateway 설치 (경량화됨, 권장)
 
-2. **TWS 실행 및 로그인**
+2. **IBKR Gateway 실행 및 로그인**
    - Paper Trading 계정으로 먼저 테스트 권장
 
 3. **API 설정** (가장 중요!)
-   - TWS 상단 메뉴: `Edit` → `Global Configuration`
+   - Gateway 상단 메뉴: `Configure` → `Settings`
    - 왼쪽 메뉴: `API` → `Settings`
    - ✅ **Enable ActiveX and Socket Clients** 체크
    - ✅ **Socket port:** `4002` (Paper)
@@ -152,7 +152,7 @@ pip list
 
 ### ⚠️ 중요 알림:
 ```
-TWS 또는 IB Gateway가 실행 중이고 로그인된 상태여야만
+IBKR Gateway가 실행 중이고 로그인된 상태여야만
 Step 4 이후 코드가 작동합니다!
 
 프로그램을 껐다 켜면 다시 로그인해야 합니다.
@@ -206,7 +206,7 @@ python main.py
 `core/bridge.py`를 작성합니다.
 
 요구사항:
-1. `ib_insync`를 사용하여 TWS/Gateway에 연결
+1. `ib_insync`를 사용하여 IBKR Gateway에 연결
 2. **필수:** GUI가 멈추지 않도록 QThread를 사용하여 백그라운드 연결
 3. 연결 성공/실패를 PyQt Signal로 main GUI에 전달
 4. `.env` 파일에서 IB_HOST, IB_PORT, IB_CLIENT_ID 읽기
@@ -550,14 +550,14 @@ Red Mode에서 가장 강한 모멘텀의 ETF를 선택해야 수익이 극대�
 
 확인 항목:
 1. GUI가 멈추지 않음 (time.sleep 없음)
-2. TWS 연결/해제 시 GUI 상태 반영
+2. IBKR Gateway 연결/해제 시 GUI 상태 반영
 3. 킬 스위치가 가장 먼저 실행됨
 4. 모든 주문이 approve_order() 통과
 5. 로그에 모든 의사결정 기록됨
 
 테스트 시나리오:
-- TWS 꺼진 상태에서 시작 → "연결 실패" 메시지
-- TWS 켠 후 시작 → "연결됨" 표시
+- IBKR Gateway 꺼진 상태에서 시작 → "연결 실패" 메시지
+- IBKR Gateway 켬 후 시작 → "연결됨" 표시
 - 1분간 GUI 멈춤 없이 데이터 업데이트
 ```
 
@@ -589,8 +589,8 @@ Red Mode에서 가장 강한 모멘텀의 ETF를 선택해야 수익이 극대�
 # 💡 시니어 개발자의 조언
 
 1. **IBKR 설정이 제일 어렵습니다**
-   - 코딩보다 TWS API 설정 맞추는 게 더 힘듭니다
-   - "IBKR TWS API 설정 방법" 유튜브/블로그 검색 추천
+   - 코딩보다 IBKR Gateway API 설정 맞추는 게 더 힘듭니다
+   - "IBKR Gateway API 설정 방법" 유튜브/블로그 검색 추천
 
 2. **욕심 버리기**
    - 처음 목표: "로그만 잘 찍히는 프로그램"
