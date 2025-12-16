@@ -153,6 +153,9 @@ class OmnissiahController:
         self.bridge.log_message.connect(self.dashboard.add_log)
         self.bridge.start()
         
+        # --- 차트에 초기 데이터 로드 (스레드 시작 전!) ---
+        self._load_initial_chart_data()
+        
         # --- 시장 데이터 초기화 (백그라운드) ---
         self.market_data.start()
         
@@ -206,6 +209,41 @@ class OmnissiahController:
         """계좌 정보 업데이트"""
         self._account_balance = info.get("balance", 0.0)
         self.dashboard.update_balance(self._account_balance)
+    
+    def _load_initial_chart_data(self) -> None:
+        """
+        차트에 초기 히스토리 데이터 로드
+        
+        로컬 DB에서 최근 50일 데이터를 가져와 차트에 표시합니다.
+        """
+        try:
+            # DB에서 SPY 데이터 로드
+            self.market_data.initialize_database()
+            df = self.market_data.get_historical_prices("SPY", days=50)
+            
+            if df.empty:
+                self.dashboard.add_log("⚠️ 차트 초기 데이터 없음")
+                return
+            
+            # 캔들 데이터 추가
+            for idx, (date, row) in enumerate(df.iterrows()):
+                self.dashboard.chart_widget.add_candle(
+                    time_idx=idx,
+                    open_p=row["open"],
+                    high=row["high"],
+                    low=row["low"],
+                    close=row["close"]
+                )
+            
+            # 현재 가격 표시
+            if len(df) > 0:
+                last_price = df["close"].iloc[-1]
+                self.dashboard.chart_widget.update_price(last_price)
+            
+            self.dashboard.add_log(f"📊 차트 초기 데이터 로드 완료 ({len(df)}일)")
+            
+        except Exception as e:
+            self.dashboard.add_log(f"⚠️ 차트 데이터 로드 실패: {str(e)}")
     
     # ============================================
     # 메인 트레이딩 루프
@@ -484,7 +522,10 @@ class OmnissiahController:
         """앱 실행"""
         self.dashboard.show()
         self.dashboard.add_log("🚀 Omnissiah 시스템 준비 완료")
-        self.dashboard.add_log("▶ Start 버튼을 눌러 시작하세요")
+        
+        # 자동 시작 (500ms 후)
+        QTimer.singleShot(500, self._on_start)
+        
         return self.app.exec()
 
 

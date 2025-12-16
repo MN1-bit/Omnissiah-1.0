@@ -17,6 +17,7 @@ PyQt6 기반 실시간 모니터링 GUI
 # ============================================
 import sys                              # 시스템 관련
 from datetime import datetime           # 시간 처리
+import pytz                             # 시간대 처리
 from PyQt6.QtWidgets import (           # PyQt6 위젯들
     QApplication,                       # 앱 객체
     QMainWindow,                        # 메인 창
@@ -57,11 +58,21 @@ class OmnissiahDashboard(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)     # 위치(x,y), 크기(w,h)
         self.setMinimumSize(800, 600)             # 최소 크기
         
+        # --- 시간대 설정 ---
+        self.tz_kst = pytz.timezone("Asia/Seoul")
+        self.tz_et = pytz.timezone("US/Eastern")
+        
         # --- 다크 테마 스타일 적용 ---
         self._apply_dark_theme()
         
         # --- UI 구성 ---
         self._setup_ui()
+        
+        # --- 시계 타이머 (1초마다 업데이트) ---
+        self.clock_timer = QTimer()
+        self.clock_timer.timeout.connect(self._update_clock)
+        self.clock_timer.start(1000)
+        self._update_clock()  # 즉시 1회 업데이트
         
         # --- 초기 로그 메시지 ---
         self.add_log("🚀 Omnissiah Monitor 시작됨")
@@ -179,6 +190,49 @@ class OmnissiahDashboard(QMainWindow):
         layout = QVBoxLayout(group)
         layout.setSpacing(15)
         
+        # --- 시간 표시 ---
+        self.kst_label = QLabel("🇰🇷 KST: --:--:--")
+        self.kst_label.setFont(QFont("Segoe UI", 12))
+        self.kst_label.setStyleSheet("color: #4FC3F7;")
+        self.kst_label.setToolTip(
+            "📅 US Market Hours (한국 시간)\n"
+            "─────────────────────────\n"
+            "🟡 Pre-Market:     18:00 - 23:30\n"
+            "🟢 Regular Hours:  23:30 - 06:00\n"
+            "🟠 After-Hours:    06:00 - 10:00\n"
+            "🔴 Closed:         10:00 - 18:00\n"
+            "─────────────────────────\n"
+            "※ 서머타임 시 1시간 앞당겨짐"
+        )
+        layout.addWidget(self.kst_label)
+        
+        self.et_label = QLabel("🇺🇸 ET: --:--:--")
+        self.et_label.setFont(QFont("Segoe UI", 12))
+        self.et_label.setStyleSheet("color: #FFD54F;")
+        self.et_label.setToolTip(
+            "📅 US Market Hours (Eastern Time)\n"
+            "─────────────────────────\n"
+            "🟡 Pre-Market:     04:00 - 09:30\n"
+            "🟢 Regular Hours:  09:30 - 16:00\n"
+            "🟠 After-Hours:    16:00 - 20:00\n"
+            "🔴 Closed:         20:00 - 04:00\n"
+            "─────────────────────────\n"
+            "※ 휴일/서머타임 자동 적용"
+        )
+        layout.addWidget(self.et_label)
+        
+        # --- 마켓 상태 ---
+        self.market_status_label = QLabel("📈 Market: --")
+        self.market_status_label.setFont(QFont("Segoe UI", 11))
+        self.market_status_label.setStyleSheet("color: #B0BEC5;")
+        layout.addWidget(self.market_status_label)
+        
+        # --- 구분선 ---
+        line0 = QFrame()
+        line0.setFrameShape(QFrame.Shape.HLine)
+        line0.setStyleSheet("background-color: #3c3c3c;")
+        layout.addWidget(line0)
+        
         # --- 연결 상태 ---
         self.connection_label = QLabel("연결: 🔴 끊김")
         self.connection_label.setFont(QFont("Segoe UI", 14))
@@ -265,6 +319,47 @@ class OmnissiahDashboard(QMainWindow):
         layout.addLayout(button_layout)
         
         return panel
+    
+    def _update_clock(self) -> None:
+        """시계 업데이트 (KST, ET) + 마켓 상태"""
+        now_utc = datetime.now(pytz.UTC)
+        
+        # KST (한국 시간)
+        kst_time = now_utc.astimezone(self.tz_kst)
+        self.kst_label.setText(f"🇰🇷 KST: {kst_time.strftime('%H:%M:%S')}")
+        
+        # ET (미 동부 시간)
+        et_time = now_utc.astimezone(self.tz_et)
+        self.et_label.setText(f"🇺🇸 ET: {et_time.strftime('%H:%M:%S')}")
+        
+        # 마켓 상태 판단
+        et_hour = et_time.hour
+        et_minute = et_time.minute
+        et_weekday = et_time.weekday()  # 0=월, 6=일
+        
+        # 주말 체크
+        if et_weekday >= 5:  # 토, 일
+            status = "🔴 Closed (Weekend)"
+            color = "#F44336"
+        else:
+            # 시간대별 세션 판단
+            et_total_min = et_hour * 60 + et_minute
+            
+            if 240 <= et_total_min < 570:  # 04:00 ~ 09:30
+                status = "🟡 Pre-Market"
+                color = "#FFC107"
+            elif 570 <= et_total_min < 960:  # 09:30 ~ 16:00
+                status = "🟢 Regular Hours"
+                color = "#4CAF50"
+            elif 960 <= et_total_min < 1200:  # 16:00 ~ 20:00
+                status = "🟠 After-Hours"
+                color = "#FF9800"
+            else:  # 20:00 ~ 04:00
+                status = "🔴 Closed"
+                color = "#F44336"
+        
+        self.market_status_label.setText(f"📈 {status}")
+        self.market_status_label.setStyleSheet(f"color: {color};")
     
     # ============================================
     # 공개 메서드 (다른 모듈에서 호출)

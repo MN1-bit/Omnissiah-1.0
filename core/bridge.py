@@ -235,12 +235,13 @@ class IBKRBridge(QThread):
     # 실시간 시세 구독
     # ============================================
     
-    def subscribe_market_data(self, symbols: List[str]) -> None:
+    def subscribe_market_data(self, symbols: List[str], outside_rth: bool = True) -> None:
         """
         실시간 시세 구독
         
         Args:
             symbols: 구독할 심볼 리스트 (예: ["SPY", "QQQ", "VIX"])
+            outside_rth: True면 Pre/After Market 시세도 수신 (기본값: True)
         """
         if not self.ib or not self.ib.isConnected():
             self.log_message.emit("❌ 시세 구독 실패: IBKR 연결 안됨")
@@ -258,14 +259,24 @@ class IBKRBridge(QThread):
                 else:
                     contract = Stock(symbol, "SMART", "USD")
                 
-                # 시세 구독 요청
-                ticker = self.ib.reqMktData(contract, "", False, False)
+                # 시세 구독 요청 (outsideRth: Pre/After Market 지원)
+                # genericTickList "": 기본 틱, snapshot=False: 스트리밍
+                # regulatorySnapshot=False, mktDataOptions=[]
+                ticker = self.ib.reqMktData(
+                    contract, 
+                    "", 
+                    False,  # snapshot
+                    False,  # regulatorySnapshot
+                    []      # mktDataOptions
+                )
                 
                 # 콜백 등록
                 ticker.updateEvent += self._on_price_update
                 
                 self._subscribed_tickers[symbol] = ticker
-                self.log_message.emit(f"📡 실시간 시세 구독: {symbol}")
+                
+                hours_mode = "Extended Hours" if outside_rth else "Regular Hours"
+                self.log_message.emit(f"📡 실시간 시세 구독: {symbol} ({hours_mode})")
                 
             except Exception as e:
                 self.log_message.emit(f"⚠️ {symbol} 구독 실패: {str(e)}")
