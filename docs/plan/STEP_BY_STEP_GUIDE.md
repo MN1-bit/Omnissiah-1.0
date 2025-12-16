@@ -10,24 +10,43 @@
 
 ```
 Part 1: 기초 공사 (Infrastructure)
-  [ ] Step 1: 환경 설정 및 필수 라이브러리
-  [ ] Step 2: IB Gateway 설정 (⚠️ 직접 해야 함)
-  [ ] Step 3: GUI 뼈대 만들기
+  [x] Step 0: Python 가상환경 설정
+  [x] Step 1: 환경 설정 및 필수 라이브러리
+  [x] Step 2: IB Gateway 설정 (⚠️ 직접 해야 함)
+  [x] Step 3: GUI 뼈대 만들기
 
 Part 2: 데이터와 연결 (Backend)
-  [ ] Step 4: IBKR 브릿지 연결 (QThread)
-  [ ] Step 5: 시장 데이터 수집기
+  [x] Step 4: IBKR 브릿지 연결 (QThread)
+  [x] Step 5: 시장 데이터 수집기 (하이브리드 업데이트)
+  [x] Step 5.5: 섹터 로테이션 스캐너
 
 Part 3: 두뇌 만들기 (Logic)
-  [ ] Step 6: 레짐 판단 로직
-  [ ] Step 7: 킬 스위치 & 리스크 매니저
+  [x] Step 6: 레짐 판단 로직 (횡보/상승/위기)
+  [x] Step 7: 킬 스위치 & 리스크 매니저
 
 Part 4: 전략 모듈
-  [ ] Step 8: Green/Red/Black Mode 전략
+  [x] Step 8: 횡보/상승/위기 Mode 전략
 
 Part 5: 통합
-  [ ] Step 9: 메인 컨트롤러 통합
-  [ ] Step 10: 테스트 및 검증
+  [x] Step 9: 메인 컨트롤러 통합 (하이브리드)
+  [x] Step 10: 테스트 및 검증
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Part 6: 주문 실행 & 자동화
+  [x] Step 11: 실제 주문 실행 로직
+  [x] Step 12: 자동 시작/종료 스케줄러
+  [x] Step 12.5: 적응형 오버나이트 전략
+  [ ] Step 13: Paper Trading 테스트 (⚠️ 사용자 작업 필요)
+
+Part 7: GUI 고도화 & 로깅
+  [x] Step 14: 차트 & 포지션 표시
+  [x] Step 15: 거래 내역 패널
+  [ ] Step 16: 파일 기반 로깅 시스템
+
+Part 8: LLM 통합 (Phase 1)
+  [ ] Step 17: LLM 데이터 해설 기능
+  [ ] Step 18: Context 저장 시스템
 ```
 
 ---
@@ -559,6 +578,302 @@ Red Mode에서 가장 강한 모멘텀의 ETF를 선택해야 수익이 극대�
 - IBKR Gateway 꺼진 상태에서 시작 → "연결 실패" 메시지
 - IBKR Gateway 켬 후 시작 → "연결됨" 표시
 - 1분간 GUI 멈춤 없이 데이터 업데이트
+```
+
+---
+
+# Part 6: 주문 실행 & 자동화
+
+## [Step 11] 실제 주문 실행 로직
+
+### 왜 필요한가?
+현재는 시그널 생성까지만 구현됨. 실제 IBKR에 주문을 전송하는 로직 필요.
+
+### AI에게 전달할 프롬프트:
+```
+`core/order_executor.py`를 작성합니다.
+
+클래스: OrderExecutor
+
+메서드:
+1. place_market_order(symbol, action, quantity) -> Order
+   - IBKR 시장가 주문 전송
+   - 반환: Order 객체
+
+2. place_limit_order(symbol, action, quantity, price) -> Order
+   - IBKR 지정가 주문 전송
+
+3. cancel_order(order_id) -> bool
+   - 주문 취소
+
+4. get_open_orders() -> list
+   - 미체결 주문 목록
+
+5. get_positions() -> dict
+   - 현재 보유 포지션
+
+중요:
+- 모든 주문은 approve_order() 통과 후에만 실행!
+- 주문 결과는 PyQt Signal로 GUI 전달
+- 실패 시 재시도 로직 (최대 3회). 3회 실패시 팝업으로 알림. 실패 원인에 대한 세밀한 logging 시스템 구현.
+```
+
+---
+
+## [Step 12] 자동 시작/종료 스케줄러
+
+### AI에게 전달할 프롬프트:
+```
+`core/scheduler.py`를 작성합니다.
+
+클래스: TradingScheduler
+
+기능:
+1. 장 시작 자동 실행
+   - US Market: EDT 09:30 (프리마켓 09:00)
+   - 시작 15분 전 시스템 준비
+
+2. 장 마감 자동 청산 결정
+   - 15:50 청산 여부 결정 로직
+   - 레짐별 청산 규칙 적용
+   - 횡보 Mode: 전량 청산
+   - 상승 Mode: 트레일링 스탑
+   - 위기 Mode: 즉시 청산
+
+3. 주말/휴장일 감지
+   - pandas_market_calendars 사용
+   - 휴장일 자동 스킵
+
+메서드:
+- is_market_open() -> bool
+- get_next_market_open() -> datetime
+- schedule_daily_routine()
+- handle_market_close()
+```
+
+---
+
+## [Step 12.5] 적응형 오버나이트 전략
+
+### 왜 필요한가?
+기존 청산 로직은 고정값(15:50 무조건 청산)을 사용합니다.
+시장 상황에 따라 오버나이트 킵이 유리한 경우가 있어 적응형 로직이 필요합니다.
+
+### AI에게 전달할 프롬프트:
+```
+기존 청산 로직을 적응형으로 개선합니다.
+
+수정 파일:
+1. `strategy/green_mode.py`
+   - should_keep_overnight() 추가
+   - 킵 조건: 이익 중 & 목표 미도달 & 평일
+
+2. `strategy/red_mode.py`
+   - should_keep_overnight() 추가
+   - 킵 조건: MA20 위 & VIX < (평균+1σ)
+   - 금요일/과열: 50% 부분 청산
+
+3. `core/scheduler.py`
+   - get_close_action(regime, context) 수정
+   - 컨텍스트 기반 판단
+
+4. `core/market_data.py`
+   - get_atr() 추가 (20일 ATR)
+   - get_vix_stats() 추가 (평균, 표준편차)
+
+5. `main.py`
+   - _handle_pre_close() 컨텍스트 전달
+
+적응형 파라미터 (고정값 사용 금지):
+- VIX 임계값: vix_mean + vix_std (역사적 1σ)
+- 과열 판단: daily_return > ATR × 2
+- 목표 근접: VWAP 거리 < 당일변동폭 × 0.5
+
+시간대: 모두 US/Eastern 통일
+```
+
+---
+
+## [Step 13] Paper Trading 테스트
+
+### AI에게 전달할 프롬프트:
+```
+Paper Trading 환경에서 전체 시스템 테스트를 진행합니다.
+
+테스트 시나리오:
+1. 시스템 시작 → IBKR 연결 확인
+2. 레짐 판단 → GUI 표시 확인
+3. 시그널 발생 → 주문 전송 확인
+4. 주문 체결 → 포지션 업데이트 확인
+5. 청산 조건 → 청산 주문 확인
+
+확인할 로그:
+- 주문 전송 성공/실패
+- 체결 가격 및 수량
+- 포지션 변화
+- 손익 계산
+```
+
+---
+
+# Part 7: GUI 고도화 & 로깅
+
+## [Step 14] 차트 & 포지션 표시
+
+### AI에게 전달할 프롬프트:
+```
+`gui/chart_widget.py`를 작성합니다.
+
+클래스: LiveChartWidget
+
+기능:
+1. 실시간 가격 차트
+   - pyqtgraph 또는 matplotlib 사용
+   - 5분봉 표시
+   - VWAP 밴드 오버레이
+
+2. 포지션 마커
+   - 진입점/청산점 표시
+   - 손익 색상 표시 (이익: 초록, 손실: 빨강)
+
+3. 레짐 배경색
+   - 횡보: 연노랑 배경
+   - 상승: 연청록 배경
+   - 위기: 연빨강 배경
+```
+
+---
+
+## [Step 15] 거래 내역 패널
+
+### AI에게 전달할 프롬프트:
+```
+`gui/trade_panel.py`를 작성합니다.
+
+클래스: TradeHistoryPanel
+
+기능:
+1. QTableWidget 기반 거래 내역
+   - 시간, 심볼, 방향, 수량, 가격, 손익
+   - 최신 거래가 맨 위
+
+2. 일일 요약
+   - 총 거래 수
+   - 승률
+   - 총 손익
+
+3. CSV 내보내기
+   - 버튼 클릭으로 거래 내역 저장
+```
+
+---
+
+## [Step 16] 파일 기반 로깅 시스템
+
+### AI에게 전달할 프롬프트:
+```
+`core/logger.py`를 작성합니다.
+
+클래스: TradingLogger
+
+기능:
+1. 일별 로그 파일
+   - logs/YYYY-MM-DD.log
+   - 자동 생성/롤링
+
+2. 로그 레벨
+   - INFO: 일반 동작
+   - TRADE: 주문/체결
+   - WARNING: 경고
+   - ERROR: 오류
+
+3. GUI 연동
+   - 파일 로그 + GUI 동시 출력
+
+4. 백업
+   - 7일 이상 로그 자동 압축
+```
+
+---
+
+# Part 8: LLM 통합 (Phase 1)
+
+## [Step 17] LLM 데이터 해설 기능
+
+### 왜 필요한가?
+사용자가 시장 상황을 쉽게 이해할 수 있도록 LLM이 데이터를 해설합니다.
+
+### AI에게 전달할 프롬프트:
+```
+`core/llm_advisor.py`를 작성합니다.
+
+클래스: LLMAdvisor
+
+기능:
+1. 시장 상황 해설
+   - 현재 VIX, Z-Score, 레짐 정보를 자연어로 설명
+   - 예: "현재 VIX 18.5 (Z-Score 0.3)으로 횡보 모드입니다.
+         변동성이 낮아 평균회귀 전략이 적합합니다."
+
+2. 전략 설명
+   - 현재 실행 중인 전략을 쉽게 설명
+   - 예: "VWAP 하단에서 매수 대기 중입니다.
+         가격이 $145.20 이하로 내려오면 매수합니다."
+
+3. 리스크 경고
+   - 위험 상황 시 경고 메시지
+   - 예: "⚠️ VIX가 급등하고 있습니다.
+         위기 모드 전환 임박, 포지션 축소를 권장합니다."
+
+API 설정:
+- OpenAI GPT-4 또는 Anthropic Claude
+- .env에서 API 키 로드
+- 요청 제한: 분당 10회
+
+메서드:
+- get_market_summary() -> str
+- get_strategy_explanation() -> str
+- get_risk_warning() -> str
+```
+
+---
+
+## [Step 18] Context 저장 시스템
+
+### AI에게 전달할 프롬프트:
+```
+`core/context_store.py`를 작성합니다.
+
+클래스: ContextStore
+
+기능:
+1. 대화 컨텍스트 저장
+   - SQLite 또는 JSON 파일
+   - 최근 20개 대화 유지
+
+2. 시장 상황 스냅샷
+   - 매 1시간마다 시장 상황 저장
+   - VIX, 레짐, 포지션, 손익
+
+3. 학습 피드백 (향후 확장용)
+   - 의사결정 로그 저장
+   - 결과 피드백 저장
+
+데이터 구조:
+{
+    "timestamp": "2024-12-16T13:00:00",
+    "regime": "횡보",
+    "vix": 18.5,
+    "z_score": 0.3,
+    "positions": [...],
+    "pnl": 150.00,
+    "llm_response": "시장이 안정적입니다..."
+}
+
+메서드:
+- save_context(data: dict) -> None
+- get_recent_context(n: int) -> list
+- get_daily_summary() -> dict
 ```
 
 ---

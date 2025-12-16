@@ -472,6 +472,116 @@ class MarketDataManager(QThread):
         if self.conn:
             self.conn.close()
         self.wait(5000)
+    
+    # ============================================
+    # 적응형 오버나이트 지표
+    # ============================================
+    
+    def get_atr(self, symbol: str = "SPY", period: int = 20) -> float:
+        """
+        ATR (Average True Range) 계산
+        
+        적응형 오버나이트 판단에 사용:
+        - 과열 판단: daily_return > ATR × 2
+        
+        Args:
+            symbol: 심볼
+            period: ATR 기간 (기본 20일)
+            
+        Returns:
+            ATR 값 (소수점)
+        """
+        try:
+            df = self.get_historical_prices(symbol, days=period + 5)
+            
+            if len(df) < period:
+                return 0.0
+            
+            # True Range 계산
+            df["prev_close"] = df["close"].shift(1)
+            df["tr1"] = df["high"] - df["low"]
+            df["tr2"] = abs(df["high"] - df["prev_close"])
+            df["tr3"] = abs(df["low"] - df["prev_close"])
+            df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
+            
+            # ATR = TR의 이동평균
+            atr = df["tr"].tail(period).mean()
+            
+            return round(atr, 4)
+            
+        except Exception as e:
+            self.log_message.emit(f"⚠️ ATR 계산 실패: {str(e)}")
+            return 0.0
+    
+    def get_vix_stats(self, window: int = 126) -> dict:
+        """
+        VIX 역사적 통계 (평균, 표준편차)
+        
+        적응형 오버나이트 판단에 사용:
+        - VIX 위험 판단: vix > vix_mean + vix_std
+        
+        Args:
+            window: 기간 (기본 126일 = 6개월)
+            
+        Returns:
+            {"mean": float, "std": float}
+        """
+        # 캐시 확인
+        self._refresh_cache_if_needed()
+        
+        if self._cached_mean is not None and self._cached_std is not None:
+            return {
+                "mean": round(self._cached_mean, 2),
+                "std": round(self._cached_std, 2)
+            }
+        
+        # 캐시가 없으면 직접 계산
+        try:
+            df = self.get_historical_prices("^VIX", days=window)
+            
+            if len(df) < 20:
+                return {"mean": 20.0, "std": 5.0}  # 기본값
+            
+            return {
+                "mean": round(df["close"].mean(), 2),
+                "std": round(df["close"].std(), 2)
+            }
+        except Exception:
+            return {"mean": 20.0, "std": 5.0}
+    
+    def get_daily_range_pct(self, symbol: str = "SPY") -> float:
+        """
+        당일 변동폭 (%)
+        
+        적응형 오버나이트 판단에 사용:
+        - 목표 근접: VWAP 거리 < daily_range × 0.5
+        
+        Args:
+            symbol: 심볼
+            
+        Returns:
+            변동폭 % (예: 0.015 = 1.5%)
+        """
+        try:
+            df = self.get_historical_prices(symbol, days=2)
+            
+            if len(df) < 1:
+                return 0.01  # 기본값 1%
+            
+            latest = df.iloc[-1]
+            open_price = latest["open"]
+            high = latest["high"]
+            low = latest["low"]
+            
+            if open_price == 0:
+                return 0.01
+            
+            range_pct = (high - low) / open_price
+            
+            return round(range_pct, 4)
+            
+        except Exception:
+            return 0.01
 
 
 # ============================================

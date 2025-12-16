@@ -182,6 +182,69 @@ class RedModeStrategy(QObject):
         """전략 초기화"""
         self._positions = []
         self._last_pyramid_price = 0.0
+    
+    # ============================================
+    # 적응형 오버나이트 판단
+    # ============================================
+    
+    def should_keep_overnight(self, context: dict) -> str:
+        """
+        상승 Mode 오버나이트 킵 조건 (적응형)
+        
+        고정값 사용하지 않음:
+        - VIX 위험: vix > vix_mean + vix_std
+        - 과열: daily_return > ATR × 2
+        
+        Args:
+            context: {
+                "current_price": float,
+                "ma20": float,
+                "vix": float,
+                "vix_mean": float,
+                "vix_std": float,
+                "daily_return": float,  # 당일 수익률 (예: 0.02 = 2%)
+                "atr": float,           # 20일 ATR
+                "is_friday": bool
+            }
+            
+        Returns:
+            "KEEP_ALL": 전량 킵
+            "KEEP_HALF": 50% 청산
+            "LIQUIDATE_ALL": 전량 청산
+        """
+        current_price = context.get("current_price", 0)
+        ma20 = context.get("ma20", 0)
+        vix = context.get("vix", 15)
+        vix_mean = context.get("vix_mean", 20)
+        vix_std = context.get("vix_std", 5)
+        daily_return = context.get("daily_return", 0)
+        atr = context.get("atr", 0)
+        is_friday = context.get("is_friday", False)
+        
+        # 1. VIX 역사적 1σ 초과 시 청산 (적응형)
+        vix_threshold = vix_mean + vix_std
+        if vix >= vix_threshold:
+            self.log_message.emit(f"🌑 상승: VIX {vix:.1f} >= {vix_threshold:.1f} (1σ) → 전량 청산")
+            return "LIQUIDATE_ALL"
+        
+        # 2. MA20 이탈이면 청산
+        if current_price < ma20:
+            self.log_message.emit(f"🌑 상승: MA20 이탈 (${current_price:.2f} < ${ma20:.2f}) → 전량 청산")
+            return "LIQUIDATE_ALL"
+        
+        # 3. 당일 수익이 ATR의 2배 초과 시 과열 (적응형)
+        if atr > 0 and daily_return > (atr * 2):
+            self.log_message.emit(f"🌓 상승: 과열 ({daily_return:.2%} > ATR×2) → 50% 청산")
+            return "KEEP_HALF"
+        
+        # 4. 금요일: 부분 청산
+        if is_friday:
+            self.log_message.emit("🌓 상승: 금요일 → 50% 청산")
+            return "KEEP_HALF"
+        
+        # 그 외 전량 킵
+        self.log_message.emit("🌙 상승: 추세 유지 → 오버나이트 킵")
+        return "KEEP_ALL"
 
 
 # ============================================

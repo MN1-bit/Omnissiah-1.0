@@ -31,6 +31,8 @@ from core.market_data import MarketDataManager
 from core.regime_detector import RegimeDetector
 from core.risk_manager import RiskManager
 from core.scanner import UniverseSelector
+from core.order_executor import OrderExecutor
+from core.scheduler import TradingScheduler
 from strategy.green_mode import GreenModeStrategy
 from strategy.red_mode import RedModeStrategy
 from strategy.black_mode import BlackModeStrategy
@@ -63,6 +65,8 @@ class OmnissiahController:
         self.regime_detector = RegimeDetector()
         self.risk_manager = RiskManager()
         self.universe_selector = UniverseSelector()
+        self.order_executor = OrderExecutor(risk_manager=self.risk_manager)
+        self.scheduler = TradingScheduler()
         
         # --- 전략 모듈 ---
         self.green_strategy = GreenModeStrategy(self.risk_manager)
@@ -107,6 +111,21 @@ class OmnissiahController:
         self.green_strategy.log_message.connect(self.dashboard.add_log)
         self.red_strategy.log_message.connect(self.dashboard.add_log)
         self.black_strategy.log_message.connect(self.dashboard.add_log)
+        
+        # 전략 시그널 → 주문 실행 연결
+        self.green_strategy.signal_generated.connect(self._execute_order)
+        self.red_strategy.signal_generated.connect(self._execute_order)
+        self.black_strategy.signal_generated.connect(self._execute_order)
+        
+        # OrderExecutor
+        self.order_executor.log_message.connect(self.dashboard.add_log)
+        self.order_executor.order_filled.connect(self._on_order_filled)
+        self.order_executor.order_failed.connect(self._on_order_failed)
+        
+        # Scheduler
+        self.scheduler.log_message.connect(self.dashboard.add_log)
+        self.scheduler.pre_close_warn.connect(self._handle_pre_close)
+        self.scheduler.market_close.connect(self._handle_market_close)
     
     def _setup_buttons(self) -> None:
         """GUI 버튼 설정"""
@@ -149,6 +168,9 @@ class OmnissiahController:
         self.main_timer.stop()
         self._is_running = False
         
+        # 스케줄러 중지
+        self.scheduler.stop()
+        
         # 브릿지 중지
         if self.bridge:
             self.bridge.stop()
@@ -163,6 +185,13 @@ class OmnissiahController:
         self.dashboard.update_connection_status(connected)
         
         if connected:
+            # IB 객체를 OrderExecutor에 전달
+            if self.bridge and self.bridge.ib:
+                self.order_executor.set_ib(self.bridge.ib)
+            
+            # 스케줄러 시작
+            self.scheduler.start()
+            
             # 연결 성공 시 메인 루프 시작 (하이브리드: 5초 기본)
             self._is_running = True
             self._current_interval = self.BASE_INTERVAL
@@ -280,6 +309,137 @@ class OmnissiahController:
         self.dashboard.update_kill_switch(status)
         if status != "CLEAR":
             self.dashboard.add_log(f"🚨 킬 스위치 발동: {status}")
+    
+    # ============================================
+    # 주문 실행 핸들러
+    # ============================================
+    
+    def _execute_order(self, signal: dict) -> None:
+        """
+        전략 시그널 → 실제 주문 실행
+        
+        Args:
+            signal: {action, symbol, quantity, price, reason}
+        """
+        action = signal.get("action", "")
+        symbol = signal.get("symbol", "SPY")  # 기본 심볼
+        quantity = signal.get("quantity", 1)
+        price = signal.get("price")
+        
+        self.dashboard.add_log(f"📤 주문 신호: {action} {quantity} {symbol}")
+        
+        if action == "BUY":
+            self.order_executor.place_market_order(
+                symbol=symbol,
+                action="BUY",
+                quantity=quantity,
+                kill_status="CLEAR",
+                daily_loss=self._daily_loss,
+                account_balance=self._account_balance
+            )
+        elif action == "SELL":
+            self.order_executor.place_market_order(
+                symbol=symbol,
+                action="SELL",
+                quantity=quantity,
+                kill_status="CLEAR",
+                daily_loss=self._daily_loss,
+                account_balance=self._account_balance
+            )
+    
+    def _on_order_filled(self, data: dict) -> None:
+        """주문 체결 완료"""
+        order_id = data.get("order_id")
+        fill_price = data.get("fill_price", 0)
+        filled_qty = data.get("filled_qty", 0)
+        symbol = data.get("symbol", "")
+        
+        self.dashboard.add_log(
+            f"💰 체결: {symbol} {filled_qty}주 @ ${fill_price:.2f}"
+        )
+    
+    def _on_order_failed(self, data: dict) -> None:
+        """주문 실패"""
+        reason = data.get("reason", "알 수 없음")
+        symbol = data.get("symbol", "")
+        
+        self.dashboard.add_log(f"❌ 주문 실패 ({symbol}): {reason}")
+    
+    # ============================================
+    # 스케줄러 핸들러
+    # ============================================
+    
+    def _handle_pre_close(self) -> None:
+        """장 마감 10분 전 처리 (적응형 오버나이트)"""
+        self.dashboard.add_log("⏰ 장 마감 10분 전 - 적응형 오버나이트 결정")
+        
+        # === 위기 모드: 즉시 청산 (기존 유지) ===
+        if self._current_regime == "위기":
+            self.dashboard.add_log("🌑 위기 모드: 즉시 청산")
+            return
+        
+        # === 컨텍스트 수집 (적응형 파라미터) ===
+        try:
+            vix_stats = self.market_data.get_vix_stats()
+            atr = self.market_data.get_atr("SPY")
+            daily_range = self.market_data.get_daily_range_pct("SPY")
+            
+            # 금요일 체크 (US Eastern)
+            import pytz
+            from datetime import datetime
+            us_eastern = pytz.timezone("US/Eastern")
+            is_friday = datetime.now(us_eastern).weekday() == 4
+            
+        except Exception as e:
+            self.dashboard.add_log(f"⚠️ 컨텍스트 수집 실패: {e}")
+            return
+        
+        # === 횡보 모드: 조건부 오버나이트 ===
+        if self._current_regime == "횡보" and self.green_strategy.has_position():
+            context = {
+                "current_price": 0,  # TODO: 실시간 가격
+                "entry_price": self.green_strategy._entry_price,
+                "vwap": 0,  # TODO: 실시간 VWAP
+                "daily_range_pct": daily_range,
+                "is_friday": is_friday
+            }
+            
+            keep = self.green_strategy.should_keep_overnight(context)
+            if not keep:
+                self.dashboard.add_log("🌑 횡보: 청산 실행")
+                # TODO: 실제 청산 주문
+        
+        # === 상승 모드: 조건부 오버나이트 ===
+        elif self._current_regime == "상승" and self.red_strategy.has_position():
+            context = {
+                "current_price": 0,  # TODO: 실시간 가격
+                "ma20": 0,  # TODO: MA20
+                "vix": self.market_data._last_vix if hasattr(self.market_data, '_last_vix') else 15,
+                "vix_mean": vix_stats["mean"],
+                "vix_std": vix_stats["std"],
+                "daily_return": 0,  # TODO: 당일 수익률
+                "atr": atr,
+                "is_friday": is_friday
+            }
+            
+            action = self.red_strategy.should_keep_overnight(context)
+            if action == "LIQUIDATE_ALL":
+                self.dashboard.add_log("🌑 상승: 전량 청산 실행")
+                # TODO: 전량 청산 주문
+            elif action == "KEEP_HALF":
+                self.dashboard.add_log("🌓 상승: 50% 청산 실행")
+                # TODO: 50% 청산 주문
+    
+    def _handle_market_close(self) -> None:
+        """장 마감 처리"""
+        self.dashboard.add_log("🔔 장 마감 - 일일 정산")
+        
+        # 전략 리셋
+        self.green_strategy.reset()
+        self.red_strategy.reset()
+        self.black_strategy.reset()
+        
+        self.dashboard.add_log("🔄 전략 초기화 완료")
     
     # ============================================
     # 앱 실행

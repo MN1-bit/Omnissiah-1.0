@@ -194,6 +194,59 @@ class GreenModeStrategy(QObject):
         """전략 초기화 (일일 리셋)"""
         self._position = 0
         self._entry_price = 0.0
+    
+    # ============================================
+    # 적응형 오버나이트 판단
+    # ============================================
+    
+    def should_keep_overnight(self, context: dict) -> bool:
+        """
+        횡보 Mode 오버나이트 킵 조건 (적응형)
+        
+        고정값 사용하지 않음:
+        - 목표 근접: VWAP 거리 < daily_range × 0.5
+        
+        Args:
+            context: {
+                "current_price": float,
+                "entry_price": float,
+                "vwap": float,
+                "daily_range_pct": float,  # 당일 변동폭 %
+                "is_friday": bool
+            }
+            
+        Returns:
+            True: 오버나이트 킵
+            False: 청산
+        """
+        # 1. 금요일은 무조건 청산 (주말 리스크)
+        if context.get("is_friday", False):
+            self.log_message.emit("🌑 횡보: 금요일 → 청산")
+            return False
+        
+        # 2. 손실 중이면 청산
+        current_price = context.get("current_price", 0)
+        entry_price = context.get("entry_price", self._entry_price)
+        
+        if current_price < entry_price:
+            self.log_message.emit("🌑 횡보: 손실 중 → 청산")
+            return False
+        
+        # 3. 목표가(VWAP) 근접 시 청산 (적응형 임계값)
+        vwap = context.get("vwap", 0)
+        daily_range = context.get("daily_range_pct", 0.01)  # 기본 1%
+        
+        if vwap > 0:
+            vwap_distance_pct = abs(current_price - vwap) / vwap
+            threshold = daily_range * 0.5  # 당일 변동폭의 절반
+            
+            if vwap_distance_pct < threshold:
+                self.log_message.emit(f"🌑 횡보: VWAP 근접 ({vwap_distance_pct:.2%}) → 청산")
+                return False
+        
+        # 이익 중이고 목표가와 거리 있으면 킵
+        self.log_message.emit("🌙 횡보: 이익 중 & 목표 미도달 → 오버나이트 킵")
+        return True
 
 
 # ============================================
