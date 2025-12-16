@@ -15,7 +15,7 @@ GUI가 멈추지 않도록 별도 스레드에서 실행됩니다.
 import os                               # 환경 변수
 from typing import Optional, Dict, Any, List  # 타입 힌트
 from dotenv import load_dotenv          # .env 파일 로드
-from ib_insync import IB, util, Stock, Ticker  # IBKR API
+from ib_insync import IB, util, Stock, Ticker, Future  # IBKR API
 from PyQt6.QtCore import (              # PyQt6 코어
     QThread,                            # 백그라운드 스레드
     pyqtSignal,                         # 시그널 (스레드 → GUI 통신)
@@ -66,6 +66,12 @@ class IBKRBridge(QThread):
         
         # --- 실시간 시세 구독 추적 ---
         self._subscribed_tickers: Dict[str, Ticker] = {}
+        
+        # --- VIX 선물 데이터 ---
+        self._vix_futures: Dict[str, float] = {
+            "front_month": 0.0,
+            "back_month": 0.0,
+        }
     
     def run(self) -> None:
         """
@@ -321,6 +327,98 @@ class IBKRBridge(QThread):
         except Exception:
             pass  # 에러 무시 (시세 업데이트가 너무 빈번함)
 
+
+    # ============================================
+    # VIX 선물 구독
+    # ============================================
+    
+    def subscribe_vix_futures(self) -> None:
+        """
+        VIX 선물 (VX) 구독
+        
+        근월물과 원월물을 자동으로 계산하여 구독합니다.
+        """
+        if not self.ib or not self.ib.isConnected():
+            self.log_message.emit("❌ VIX 선물 구독 실패: IBKR 연결 안됨")
+            return
+        
+        try:
+            from datetime import datetime, timedelta
+            import calendar
+            
+            # 현재 날짜 기준 근월/원월 계산
+            now = datetime.now()
+            
+            # VX 선물은 매월 셋째 주 수요일 만기
+            def get_vx_expiry(year: int, month: int) -> datetime:
+                """VX 선물 만기일 계산 (셋째 주 수요일)"""
+                cal = calendar.Calendar()
+                wednesdays = [d for d in cal.itermonthdays2(year, month) 
+                              if d[0] != 0 and d[1] == 2]  # 수요일 = 2
+                if len(wednesdays) >= 3:
+                    third_wed = wednesdays[2][0]
+                    return datetime(year, month, third_wed)
+                return datetime(year, month, 15)  # fallback
+            
+            # 근월물 (이번 달 또는 다음 달)
+            front_month = now.month
+            front_year = now.year
+            front_expiry = get_vx_expiry(front_year, front_month)
+            
+            # 만기가 지났으면 다음 달로
+            if now > front_expiry:
+                front_month += 1
+                if front_month > 12:
+                    front_month = 1
+                    front_year += 1
+            
+            # 원월물 (근월물 + 2개월)
+            back_month = front_month + 2
+            back_year = front_year
+            if back_month > 12:
+                back_month -= 12
+                back_year += 1
+            
+            front_contract_month = f"{front_year}{front_month:02d}"
+            back_contract_month = f"{back_year}{back_month:02d}"
+            
+            # VX 선물 계약 생성
+            vx_front = Future("VX", exchange="CFE", 
+                              lastTradeDateOrContractMonth=front_contract_month)
+            vx_back = Future("VX", exchange="CFE", 
+                             lastTradeDateOrContractMonth=back_contract_month)
+            
+            # 시세 구독 (qualifyContracts 생략 - 블로킹 방지)
+            front_ticker = self.ib.reqMktData(vx_front, "", False, False, [])
+            back_ticker = self.ib.reqMktData(vx_back, "", False, False, [])
+            
+            # 콜백 등록 (last, bid, ask 순서로 확인)
+            def on_front_update(ticker):
+                price = ticker.last or ticker.bid or ticker.ask
+                if price and price > 0:
+                    self._vix_futures["front_month"] = price
+                    self.log_message.emit(f"📈 VX Front: {price:.2f}")
+            
+            def on_back_update(ticker):
+                price = ticker.last or ticker.bid or ticker.ask
+                if price and price > 0:
+                    self._vix_futures["back_month"] = price
+                    self.log_message.emit(f"📈 VX Back: {price:.2f}")
+            
+            front_ticker.updateEvent += on_front_update
+            back_ticker.updateEvent += on_back_update
+            
+            self._subscribed_tickers["VX_FRONT"] = front_ticker
+            self._subscribed_tickers["VX_BACK"] = back_ticker
+            
+            self.log_message.emit(f"📡 VIX 선물 구독: VX {front_contract_month} (근월), VX {back_contract_month} (원월)")
+            
+        except Exception as e:
+            self.log_message.emit(f"⚠️ VIX 선물 구독 실패: {str(e)}")
+    
+    def get_vix_futures(self) -> Dict[str, float]:
+        """VIX 선물 가격 반환"""
+        return self._vix_futures
 
 # ============================================
 # 단위 테스트

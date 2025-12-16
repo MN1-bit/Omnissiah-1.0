@@ -192,9 +192,15 @@ class OmnissiahController:
             if self.bridge and self.bridge.ib:
                 self.order_executor.set_ib(self.bridge.ib)
             
+            # MarketDataManager에 bridge 참조 전달 (VIX 선물용)
+            self.market_data.bridge = self.bridge
+            
             # 실시간 시세 구독 (SPY, QQQ, VIX)
             self.bridge.price_update.connect(self._on_price_update)
             self.bridge.subscribe_market_data(["SPY", "QQQ", "VIX"])
+            
+            # VIX 선물 구독 (Term Structure 정확도 향상)
+            self.bridge.subscribe_vix_futures()
             
             # 스케줄러 시작
             self.scheduler.start()
@@ -590,10 +596,38 @@ class OmnissiahController:
         self.dashboard.show()
         self.dashboard.add_log("🚀 Omnissiah 시스템 준비 완료")
         
+        # 종료 시 cleanup 연결
+        self.app.aboutToQuit.connect(self._cleanup)
+        
         # 자동 시작 (500ms 후)
         QTimer.singleShot(500, self._on_start)
         
         return self.app.exec()
+    
+    def _cleanup(self) -> None:
+        """앱 종료 시 정리"""
+        self.dashboard.add_log("🧹 시스템 종료 중...")
+        
+        # 타이머 중지
+        if hasattr(self, "main_timer"):
+            self.main_timer.stop()
+        
+        # 스케줄러 중지
+        if hasattr(self, "scheduler"):
+            self.scheduler.stop()
+        
+        # MarketData 스레드 중지
+        if hasattr(self, "market_data") and self.market_data.isRunning():
+            self.market_data.stop()
+            self.market_data.wait(2000)  # 최대 2초 대기
+        
+        # IBKR 브릿지 중지
+        if self.bridge:
+            self.bridge.stop()
+            self.bridge.wait(2000)  # 최대 2초 대기
+            self.bridge = None
+        
+        self.dashboard.add_log("✅ 시스템 종료 완료")
 
 
 # ============================================

@@ -61,6 +61,7 @@ class MarketDataManager(QThread):
         """
         super().__init__(parent)
         self.ib = ib          # IBKR IB 객체 (연결된 경우)
+        self.bridge = None    # IBKRBridge 참조 (VIX 선물용)
         self.conn: Optional[sqlite3.Connection] = None
         self._is_running = False
         
@@ -276,13 +277,21 @@ class MarketDataManager(QThread):
             vix = yf.Ticker("^VIX")
             spot = vix.info.get("regularMarketPrice", 0)
             
-            # VIX 선물은 별도 API 필요 (현재는 현물만)
-            # TODO: IBKR로 VIX 선물 조회 추가
+            # IBKR에서 VIX 선물 가격 가져오기
+            front_month = spot or 0.0
+            back_month = spot or 0.0
+            
+            if self.bridge:
+                vix_futures = self.bridge.get_vix_futures()
+                if vix_futures.get("front_month", 0) > 0:
+                    front_month = vix_futures["front_month"]
+                if vix_futures.get("back_month", 0) > 0:
+                    back_month = vix_futures["back_month"]
             
             return {
                 "spot": spot or 0.0,
-                "front_month": spot or 0.0,  # 임시로 현물값 사용
-                "back_month": spot or 0.0,   # 임시로 현물값 사용
+                "front_month": front_month,
+                "back_month": back_month,
             }
             
         except Exception as e:
@@ -300,6 +309,9 @@ class MarketDataManager(QThread):
         
         front = vix_data["front_month"]
         back = vix_data["back_month"]
+        
+        # 디버그 로그
+        self.log_message.emit(f"📊 VIX Term: front={front:.2f}, back={back:.2f}")
         
         if front < back:
             return "CONTANGO"
